@@ -129,6 +129,8 @@ def generate_timeline(df):
         tasks.append(add_intermediate_wash(first_wash_time, first_wash_time + wash_duration, wash_duration))
         last_intermediate_wash_time = first_wash_time + wash_duration
         last_wash_end_time = first_wash_time + wash_duration
+        # Set current_time to when wash finishes, not when processing starts yet
+        current_time = first_wash_time + wash_duration
 
     # ----------------------------
     # Loop over products
@@ -139,6 +141,10 @@ def generate_timeline(df):
         process_speed = row['process speed per hour']
         line_efficiency = row['line efficiency']
         change_over_mins = row['Change Over']
+
+        # Update current_time to the "Date from" for the first product (when processing actually starts)
+        if i == 0:
+            current_time = start_time_of_week
 
         # --- Changeover ---
         if i > 0:
@@ -227,32 +233,18 @@ def generate_timeline(df):
         processing_start_times.append(current_time)
 
         # Check for standalone 24hr intermediate wash
-        # Rule: Intermediate wash MUST happen within 24hrs of ANY processing start
-        if last_processing_start_time:
+        # Rule: Intermediate wash MUST happen exactly 24hrs after processing starts
+        if last_processing_start_time is not None:
             intermediate_due_time = last_processing_start_time + timedelta(hours=24)
             
-            # Check if we're past the 24hr deadline or will be during current processing
-            if (current_time >= intermediate_due_time or 
-                (intermediate_due_time >= processing_start_time and intermediate_due_time <= extended_processing_end_time)):
+            # If the 24hr deadline falls during current processing, schedule it
+            if intermediate_due_time >= processing_start_time and intermediate_due_time <= extended_processing_end_time:
+                tasks.append(add_intermediate_wash(intermediate_due_time, intermediate_due_time + intermediate_wash_duration, intermediate_wash_duration))
+                last_intermediate_wash_time = intermediate_due_time + intermediate_wash_duration
                 
-                # Check if we haven't already done an intermediate wash since the deadline
-                needs_wash = True
-                if last_intermediate_wash_time and last_intermediate_wash_time >= intermediate_due_time:
-                    needs_wash = False
-                
-                if needs_wash:
-                    # Schedule the wash at the due time, or now if we're past due
-                    wash_start_time = max(intermediate_due_time, current_time)
-                    if wash_start_time < extended_processing_end_time:
-                        wash_start_time = max(wash_start_time, processing_start_time)  # Don't start before current processing
-                    
-                    intermediate_end_time = wash_start_time + intermediate_wash_duration
-                    tasks.append(add_intermediate_wash(wash_start_time, intermediate_end_time, intermediate_wash_duration))
-                    last_intermediate_wash_time = intermediate_end_time
-                    
-                    # Extend processing time to account for the intermediate wash
-                    if intermediate_end_time > extended_processing_end_time:
-                        extended_processing_end_time += intermediate_wash_duration
+                # Extend processing time to account for the intermediate wash
+                if (intermediate_due_time + intermediate_wash_duration) > extended_processing_end_time:
+                    extended_processing_end_time += intermediate_wash_duration
         
         # Update the last processing start time for next iteration
         last_processing_start_time = processing_start_time
