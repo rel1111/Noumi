@@ -25,11 +25,10 @@ def generate_timeline(df):
         'intermediate_wash': 'lightblue'
     }
 
-    # Initialize a list to hold all tasks for plotting
     tasks = []
 
     # ----------------------------
-    # Helper functions (must be defined before use)
+    # Helper functions
     # ----------------------------
     def add_intermediate_wash(start_time, end_time, duration):
         """Helper to add intermediate wash task"""
@@ -43,13 +42,13 @@ def generate_timeline(df):
         }
 
     def needs_24hr_intermediate_wash(current_time, last_intermediate_time):
-        """Check if we need a 24hr intermediate wash"""
+        """Check if we need a 24hr standalone intermediate wash"""
         if last_intermediate_time is None:
             return False
         return (current_time - last_intermediate_time) >= timedelta(hours=24)
 
     # ----------------------------
-    # Get schedule parameters
+    # Parse schedule parameters
     # ----------------------------
     try:
         start_time_of_week = pd.to_datetime(df.loc[0, 'Date from'])
@@ -89,8 +88,11 @@ def generate_timeline(df):
     last_intermediate_wash_time = None
     processing_start_times = []
 
-    # If a specific first wash time is provided, add it
+    # ----------------------------
+    # First wash if specified
+    # ----------------------------
     if first_wash_time and wash_duration > timedelta(minutes=0):
+        # Scheduled wash
         tasks.append({
             'start': first_wash_time,
             'end': first_wash_time + wash_duration,
@@ -99,16 +101,13 @@ def generate_timeline(df):
             'product': 'Scheduled Wash',
             'order': -2
         })
-
-        # Add intermediate wash after first scheduled wash
-        intermediate_start = first_wash_time + wash_duration
-        intermediate_end = intermediate_start + intermediate_wash_duration
-        tasks.append(add_intermediate_wash(intermediate_start, intermediate_end, intermediate_wash_duration))
-        last_intermediate_wash_time = intermediate_end
-        last_wash_end_time = intermediate_end
+        # Simultaneous intermediate wash
+        tasks.append(add_intermediate_wash(first_wash_time, first_wash_time + wash_duration, wash_duration))
+        last_intermediate_wash_time = first_wash_time + wash_duration
+        last_wash_end_time = first_wash_time + wash_duration
 
     # ----------------------------
-    # Iterate through products
+    # Loop over products
     # ----------------------------
     for i, row in df.iterrows():
         product_name = row['product name']
@@ -140,14 +139,18 @@ def generate_timeline(df):
 
             if changeover_overlaps_with_wash:
                 for wash in scheduled_washes_in_changeover:
+                    # Scheduled wash
                     tasks.append({
                         'start': wash['start'],
                         'end': wash['end'],
-                        'duration_hours': (wash['end'] - wash['start']).total_seconds() / 3600,
+                        'duration_hours': wash_duration.total_seconds() / 3600,
                         'task': 'wash',
                         'product': 'Scheduled Wash',
                         'order': -1
                     })
+                    # Simultaneous intermediate wash
+                    tasks.append(add_intermediate_wash(wash['start'], wash['end'], wash_duration))
+                    last_intermediate_wash_time = wash['end']
                 current_time = scheduled_washes_in_changeover[-1]['end']
             else:
                 tasks.append({
@@ -176,7 +179,7 @@ def generate_timeline(df):
             if overlap_start < overlap_end:
                 total_wash_overlap_duration += (overlap_end - overlap_start)
 
-                # Add scheduled wash
+                # Scheduled wash
                 tasks.append({
                     'start': next_wash_start_time,
                     'end': wash_end_time,
@@ -185,13 +188,9 @@ def generate_timeline(df):
                     'product': 'Scheduled Wash',
                     'order': -1
                 })
-
-                # Add intermediate wash
-                intermediate_start = wash_end_time
-                intermediate_end = intermediate_start + intermediate_wash_duration
-                tasks.append(add_intermediate_wash(intermediate_start, intermediate_end, intermediate_wash_duration))
-                last_intermediate_wash_time = intermediate_end
-                total_wash_overlap_duration += intermediate_wash_duration
+                # Simultaneous intermediate wash
+                tasks.append(add_intermediate_wash(next_wash_start_time, wash_end_time, wash_duration))
+                last_intermediate_wash_time = wash_end_time
 
                 last_wash_end_time = wash_end_time
                 next_wash_start_time = last_wash_end_time + gap_duration
@@ -201,7 +200,7 @@ def generate_timeline(df):
         extended_processing_end_time = processing_end_time + total_wash_overlap_duration
         processing_start_times.append(current_time)
 
-        # Check 24hr intermediate wash
+        # Standalone 24hr intermediate wash if needed
         if last_intermediate_wash_time and needs_24hr_intermediate_wash(
             current_time + timedelta(hours=24), last_intermediate_wash_time
         ):
@@ -212,7 +211,7 @@ def generate_timeline(df):
                 last_intermediate_wash_time = intermediate_end_24hr
                 extended_processing_end_time += intermediate_wash_duration
 
-        # Add processing segments
+        # Processing segments
         segment_start_time = current_time
         wash_intervals = [(t['start'], t['end']) for t in tasks if t['task'] in ['wash', 'intermediate_wash']]
         wash_intervals = sorted([w for w in wash_intervals if w[0] < extended_processing_end_time and w[1] > current_time])
