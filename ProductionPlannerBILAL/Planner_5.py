@@ -1,5 +1,6 @@
 import pandas as pd
 import matplotlib.pyplot as plt
+import matplotlib.patheffects
 from datetime import datetime, timedelta
 import matplotlib.dates as mdates
 import streamlit as st
@@ -41,11 +42,23 @@ def generate_timeline(df):
             'order': -0.5
         }
 
-    def needs_24hr_intermediate_wash(current_time, last_intermediate_time):
-        """Check if we need a 24hr standalone intermediate wash"""
+    def needs_24hr_intermediate_wash(current_processing_time, last_intermediate_time):
+        """Check if we need a 24hr standalone intermediate wash based on processing time"""
         if last_intermediate_time is None:
             return False
-        return (current_time - last_intermediate_time) >= timedelta(hours=24)
+        # Check if 24 hours have passed since last intermediate wash from the perspective of processing
+        return (current_processing_time - last_intermediate_time) >= timedelta(hours=24)
+
+    def find_next_intermediate_wash_time(processing_start_time, last_intermediate_time):
+        """Find when the next intermediate wash should occur during processing"""
+        if last_intermediate_time is None:
+            return None
+        # Calculate when 24 hours will have passed since last intermediate wash
+        next_intermediate_due = last_intermediate_time + timedelta(hours=24)
+        # Return the time only if it's after processing starts
+        if next_intermediate_due >= processing_start_time:
+            return next_intermediate_due
+        return None
 
     # ----------------------------
     # Parse schedule parameters
@@ -167,10 +180,12 @@ def generate_timeline(df):
         effective_speed = process_speed * line_efficiency
         total_processing_hours = quantity_liters / effective_speed
         processing_end_time = current_time + timedelta(hours=total_processing_hours)
+        processing_start_time = current_time  # Store the actual processing start time
 
         total_wash_overlap_duration = timedelta(minutes=0)
         next_wash_start_time = last_wash_end_time + gap_duration
 
+        # Handle scheduled washes during processing
         while next_wash_start_time < processing_end_time + total_wash_overlap_duration:
             wash_end_time = next_wash_start_time + wash_duration
             overlap_start = max(current_time, next_wash_start_time)
@@ -200,18 +215,18 @@ def generate_timeline(df):
         extended_processing_end_time = processing_end_time + total_wash_overlap_duration
         processing_start_times.append(current_time)
 
-        # Standalone 24hr intermediate wash if needed
-        if last_intermediate_wash_time and needs_24hr_intermediate_wash(
-            current_time + timedelta(hours=24), last_intermediate_wash_time
-        ):
-            intermediate_24hr_time = last_intermediate_wash_time + timedelta(hours=24)
-            if intermediate_24hr_time < extended_processing_end_time:
-                intermediate_end_24hr = intermediate_24hr_time + intermediate_wash_duration
-                tasks.append(add_intermediate_wash(intermediate_24hr_time, intermediate_end_24hr, intermediate_wash_duration))
-                last_intermediate_wash_time = intermediate_end_24hr
-                extended_processing_end_time += intermediate_wash_duration
+        # Check for standalone 24hr intermediate wash during processing
+        if last_intermediate_wash_time:
+            next_intermediate_time = find_next_intermediate_wash_time(processing_start_time, last_intermediate_wash_time)
+            if next_intermediate_time and next_intermediate_time < extended_processing_end_time:
+                intermediate_end_time = next_intermediate_time + intermediate_wash_duration
+                tasks.append(add_intermediate_wash(next_intermediate_time, intermediate_end_time, intermediate_wash_duration))
+                last_intermediate_wash_time = intermediate_end_time
+                # Extend processing time to account for the intermediate wash
+                if intermediate_end_time > extended_processing_end_time:
+                    extended_processing_end_time += (intermediate_end_time - extended_processing_end_time)
 
-        # Processing segments
+        # Create processing segments around wash intervals
         segment_start_time = current_time
         wash_intervals = [(t['start'], t['end']) for t in tasks if t['task'] in ['wash', 'intermediate_wash']]
         wash_intervals = sorted([w for w in wash_intervals if w[0] < extended_processing_end_time and w[1] > current_time])
@@ -276,13 +291,15 @@ def generate_timeline(df):
                 ax.vlines(task['end'], ymin=-0.5, ymax=y_pos + 0.4,
                           color='gray', linestyle='-', linewidth=0.5, alpha=0.5)
 
-                # Add start and end time labels only for washes
+                # Add start and end time labels only for washes - black text with yellow outline
                 ax.text(task['start'], -0.1, task['start'].strftime('%H:%M'),
                         rotation=90, va='top', ha='right',
-                        fontsize=8, fontweight='bold')
+                        fontsize=8, fontweight='bold', color='black',
+                        path_effects=[plt.matplotlib.patheffects.withStroke(linewidth=3, foreground='yellow')])
                 ax.text(task['end'], -0.1, task['end'].strftime('%H:%M'),
                         rotation=90, va='top', ha='right',
-                        fontsize=8, fontweight='bold')
+                        fontsize=8, fontweight='bold', color='black',
+                        path_effects=[plt.matplotlib.patheffects.withStroke(linewidth=3, foreground='yellow')])
 
         y_pos += 1
 

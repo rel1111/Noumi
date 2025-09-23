@@ -1,7 +1,7 @@
 import pandas as pd
-import matplotlib.pyplot as plt
+import plotly.express as px
+import plotly.graph_objects as go
 from datetime import datetime, timedelta
-import matplotlib.dates as mdates
 import streamlit as st
 import io
 
@@ -14,7 +14,7 @@ def generate_timeline(df):
         df (pd.DataFrame): The DataFrame containing the production plan data.
 
     Returns:
-        matplotlib.figure.Figure: The generated timeline figure.
+        plotly.graph_objects.Figure: The generated timeline figure.
     """
 
     # Define colors for each task
@@ -239,80 +239,106 @@ def generate_timeline(df):
             })
 
         current_time = extended_processing_end_time
-        
-    # ----------------------------
-    # Plotting
-    # ----------------------------
-    fig, ax = plt.subplots(figsize=(18, 8))
-    ax.set_facecolor('white')
 
-    y_pos = 0
-    product_y_positions = {}
-    product_order = []
+    # ----------------------------
+    # Plotting with Plotly
+    # ----------------------------
+    if not tasks:
+        st.warning("No tasks found to plot")
+        return None
 
     tasks_df = pd.DataFrame(tasks).sort_values(by='order')
 
+    # Create ordered product list
     wash_products = ['Scheduled Wash', 'Intermediate Wash']
     other_products = [p for p in tasks_df['product'].unique() if p not in wash_products]
     unique_products_ordered = [p for p in wash_products if p in tasks_df['product'].unique()] + other_products
 
-    for product_name in unique_products_ordered:
-        group = tasks_df[tasks_df['product'] == product_name].sort_values(by='start')
-        product_y_positions[product_name] = y_pos
-        product_order.append(product_name)
+    # Create the Plotly timeline
+    fig = go.Figure()
 
-        for _, task in group.iterrows():
-            ax.broken_barh(
-                [(task['start'], task['end'] - task['start'])],
-                (y_pos - 0.4, 0.8),
-                facecolors=colors[task['task']],
-                edgecolor='black'
-            )
+    # Add traces for each task type
+    for task_type in colors.keys():
+        task_data = tasks_df[tasks_df['task'] == task_type]
+        if not task_data.empty:
+            fig.add_trace(go.Scatter(
+                x=task_data['start'].tolist() + task_data['end'].tolist()[::-1],
+                y=([unique_products_ordered.index(p) for p in task_data['product']] + 
+                   [unique_products_ordered.index(p) for p in task_data['product']][::-1]),
+                fill='toself',
+                fillcolor=colors[task_type],
+                line=dict(color='black', width=1),
+                mode='lines',
+                name=task_type,
+                showlegend=True,
+                hovertemplate='%{text}<extra></extra>',
+                text=[f"{task_type}: {row['product']}<br>Start: {row['start'].strftime('%a %H:%M')}<br>End: {row['end'].strftime('%a %H:%M')}<br>Duration: {row['duration_hours']:.1f}h" 
+                      for _, row in task_data.iterrows()] * 2
+            ))
 
-            # Draw vertical lines only for washes
-            if task['task'] in ['wash', 'intermediate_wash']:
-                ax.vlines(task['start'], ymin=-0.5, ymax=y_pos + 0.4,
-                          color='gray', linestyle='-', linewidth=0.5, alpha=0.5)
-                ax.vlines(task['end'], ymin=-0.5, ymax=y_pos + 0.4,
-                          color='gray', linestyle='-', linewidth=0.5, alpha=0.5)
+    # Add individual bars for better visualization
+    for _, task in tasks_df.iterrows():
+        y_pos = unique_products_ordered.index(task['product'])
+        fig.add_shape(
+            type="rect",
+            x0=task['start'],
+            x1=task['end'],
+            y0=y_pos - 0.4,
+            y1=y_pos + 0.4,
+            fillcolor=colors[task['task']],
+            line=dict(color='black', width=1),
+            layer='below'
+        )
 
-                # Add start and end time labels only for washes
-                ax.text(task['start'], -0.1, task['start'].strftime('%H:%M'),
-                        rotation=90, va='top', ha='right',
-                        fontsize=8, fontweight='bold')
-                ax.text(task['end'], -0.1, task['end'].strftime('%H:%M'),
-                        rotation=90, va='top', ha='right',
-                        fontsize=8, fontweight='bold')
+    # Add vertical lines for task boundaries
+    for _, task in tasks_df.iterrows():
+        fig.add_vline(x=task['start'], line=dict(color='gray', width=0.5, dash='solid'), opacity=0.5)
+        fig.add_vline(x=task['end'], line=dict(color='gray', width=0.5, dash='solid'), opacity=0.5)
 
-        y_pos += 1
-
-    ax.set_yticks(list(product_y_positions.values()))
-    ax.set_yticklabels(product_order)
-    ax.set_xlabel("Time")
-    ax.set_title("Weekly Production Plan Timeline")
-    ax.grid(True)
-    ax.invert_yaxis()
-
-    ax.xaxis.set_major_locator(mdates.DayLocator())
-    ax.xaxis.set_major_formatter(mdates.DateFormatter('%a %m-%d'))
-    ax.xaxis.set_minor_locator(mdates.HourLocator(interval=3))
-    ax.xaxis.set_minor_formatter(mdates.DateFormatter('%H:%M'))
-
+    # Add day separators
     if not tasks_df.empty:
         first_date = tasks_df['start'].min().floor('D')
         last_date = tasks_df['end'].max().ceil('D')
         delta_days = (last_date - first_date).days + 1
         for day in range(delta_days):
             day_start = first_date + timedelta(days=day)
-            ax.axvline(day_start, color='gray', linestyle='--', linewidth=1, alpha=0.6)
+            fig.add_vline(x=day_start, line=dict(color='gray', width=1, dash='dash'), opacity=0.6)
 
-    plt.xticks(rotation=90, ha='right', va='top')
-    plt.setp(ax.get_xminorticklabels(), rotation=90, ha='right', va='top')
+    # Update layout
+    fig.update_layout(
+        title="Weekly Production Plan Timeline",
+        xaxis_title="Time",
+        yaxis=dict(
+            tickmode='array',
+            tickvals=list(range(len(unique_products_ordered))),
+            ticktext=unique_products_ordered,
+            autorange='reversed'
+        ),
+        height=400 + len(unique_products_ordered) * 50,  # Dynamic height based on number of products
+        showlegend=True,
+        hovermode='closest',
+        plot_bgcolor='white',
+        xaxis=dict(
+            showgrid=True,
+            gridcolor='lightgray',
+            tickformat='%a %m-%d\n%H:%M'
+        ),
+        yaxis_title="Products"
+    )
 
-    handles = [plt.Rectangle((0, 0), 1, 1, fc=colors[t]) for t in colors]
-    ax.legend(handles, colors.keys(), loc='upper right')
+    # Remove the scatter traces (they were just for legend)
+    fig.data = []
 
-    plt.tight_layout()
+    # Re-add legend items
+    for task_type, color in colors.items():
+        fig.add_trace(go.Scatter(
+            x=[None], y=[None],
+            mode='markers',
+            marker=dict(size=10, color=color, line=dict(color='black', width=1)),
+            name=task_type,
+            showlegend=True
+        ))
+
     return fig
 
 
@@ -372,15 +398,14 @@ def main():
                         fig = generate_timeline(df)
                         if fig:
                             st.subheader("Production Timeline")
-                            st.pyplot(fig)
+                            st.plotly_chart(fig, use_container_width=True)
 
-                            buf = io.BytesIO()
-                            fig.savefig(buf, format='png', bbox_inches='tight', dpi=300)
-                            buf.seek(0)
+                            # Convert to image for download
+                            img_bytes = fig.to_image(format="png", width=1800, height=800, scale=2)
 
                             st.download_button(
                                 label="Download Timeline as PNG",
-                                data=buf.getvalue(),
+                                data=img_bytes,
                                 file_name="production_timeline.png",
                                 mime="image/png"
                             )
