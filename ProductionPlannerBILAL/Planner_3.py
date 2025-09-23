@@ -363,4 +363,44 @@ def main():
             st.write("9. **First Wash Time** - If provided, will schedule the first wash at this specific time")
 
 if __name__ == "__main__":
-    main()
+    # Check if running in testing mode (not in Streamlit)
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == "test":
+        # Suppress Streamlit warnings when running in test mode
+        import warnings
+        warnings.filterwarnings("ignore")
+        
+        # Also suppress Streamlit's ScriptRunContext warnings
+        import logging
+        logging.getLogger("streamlit").setLevel(logging.ERROR)
+        # Testing mode - load a local file directly
+        test_file_path = "test.xlsx"  # Primary test file
+        
+        try:
+            print(f"Testing mode: Loading {test_file_path}")
+            df = pd.read_excel(test_file_path)
+            print("Data loaded successfully:")
+            print(df.head())
+            
+            print("\nGenerating timeline...")
+            fig = generate_timeline(df)
+            
+            if fig:
+                output_filename = 'test_production_timeline.png'
+                fig.savefig(output_filename, bbox_inches='tight', dpi=300)
+                print(f"Timeline saved as {output_filename}")
+                
+                # Optionally show the plot (comment out if running headless)
+                plt.show()
+            else:
+                print("Failed to generate timeline")
+                
+        except FileNotFoundError:
+            print(f"Test file '{test_file_path}' not found.")
+            print("Please make sure you have a 'test.xlsx' file in the same directory.")
+                
+        except Exception as e:
+            print(f"Error during testing: {e}")
+    else:
+        # Normal Streamlit mode
+        main()
