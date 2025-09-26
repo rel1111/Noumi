@@ -139,7 +139,8 @@ def generate_timeline(df):
         process_speed = row['process speed per hour']
         line_efficiency = row['line efficiency']
         change_over_mins = row['Change Over']
-# Read the 'Additional Wash' column
+
+        # Read the 'Additional Wash' column
         additional_wash = row.get('Additional Wash', 'No') # Default to 'No' if column is missing
 
         # Check for additional wash at the start of the product's processing time
@@ -160,6 +161,7 @@ def generate_timeline(df):
             
             current_time = additional_wash_end # Update current_time to end after the additional wash
             last_wash_end_time = additional_wash_end # Update last_wash_end_time for the next gap calculation
+
         # --- Changeover ---
         if i > 0:
             change_over_duration = timedelta(minutes=change_over_mins)
@@ -246,7 +248,6 @@ def generate_timeline(df):
         extended_processing_end_time = processing_end_time + total_wash_overlap_duration
         processing_start_times.append(current_time)
 
-
         # --- Standalone 24hr Intermediate Wash Check ---
         if last_intermediate_wash_time is not None:
             intermediate_due_time = last_intermediate_wash_time + timedelta(hours=24)
@@ -267,10 +268,10 @@ def generate_timeline(df):
                     ))
                     last_intermediate_wash_time = intermediate_due_time + intermediate_wash_duration
 
-                # Always extend processing time by the full wash duration
+                    # FIXED LOGIC: Always extend processing time by the full wash duration
+                    # when a standalone intermediate wash occurs during processing
                     extended_processing_end_time += intermediate_wash_duration
 
-        
         # Update the last processing start time for next iteration
         last_processing_start_time = processing_start_time
 
@@ -348,7 +349,8 @@ def generate_timeline(df):
                         rotation=90, va='top', ha='right',
                         fontsize=8, fontweight='bold', color='black',
                         path_effects=[plt.matplotlib.patheffects.withStroke(linewidth=3, foreground='yellow')])
-            
+
+            # Add timestamps for processing start and end - for testing
             if task['task'] == 'processing':
                 # Add start and end time labels for processing - black text with green outline
                 ax.text(task['start'], y_pos + 0.5, task['start'].strftime('%H:%M'),
@@ -471,7 +473,7 @@ def main():
         with st.expander("Expected File Format"):
             st.write("Your file should contain these columns:")
             st.write("**Required:** product name, quantity liters, process speed per hour, line efficiency, Change Over, Date from, Duration, Gap")
-            st.write("**Optional:** First Wash Time, Intermediate Wash Duration")
+            st.write("**Optional:** First Wash Time, Intermediate Wash Duration, Additional Wash")
 
 
 if __name__ == "__main__":
