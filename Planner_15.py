@@ -19,6 +19,19 @@ def generate_timeline(df):
       - Restores timestamp labels for wash and processing start/end.
       - Added 1-minute buffer after washes to avoid timing collision edge cases.
     """
+    # Helper function to safely parse numbers with commas
+    def safe_number_parse(value, default=0):
+        try:
+            if pd.isna(value) or value == '':
+                return default
+            # Remove commas and convert to float first, then int
+            if isinstance(value, str):
+                clean_value = value.replace(',', '')
+                return int(float(clean_value))
+            return int(float(value))
+        except (ValueError, TypeError):
+            return default
+
     # colors
     colors = {
         'processing': 'darkgreen',
@@ -32,14 +45,19 @@ def generate_timeline(df):
     # Parse schedule parameters from first row
     try:
         start_time = pd.to_datetime(df.loc[0, 'Date from'])
-        wash_duration_mins = int(df.loc[0, 'Duration']) if pd.notna(df.loc[0, 'Duration']) else 0
-        wash_gap_mins = int(df.loc[0, 'Gap']) if pd.notna(df.loc[0, 'Gap']) else 0
+        
+        wash_duration_mins = safe_number_parse(df.loc[0, 'Duration'], 0)
+        wash_gap_mins = safe_number_parse(df.loc[0, 'Gap'], 0)
+        
         wash_duration = timedelta(minutes=wash_duration_mins)
         gap_duration = timedelta(minutes=wash_gap_mins)
 
         first_wash_time = None
         if 'First Wash Time' in df.columns and pd.notna(df.loc[0, 'First Wash Time']):
-            first_wash_time = pd.to_datetime(df.loc[0, 'First Wash Time'])
+            try:
+                first_wash_time = pd.to_datetime(df.loc[0, 'First Wash Time'])
+            except (ValueError, TypeError):
+                first_wash_time = None
 
     except Exception as e:
         st.error(f"Error parsing schedule parameters: {e}")
@@ -92,10 +110,12 @@ def generate_timeline(df):
     # Process products
     for i, row in df.iterrows():
         product_name = row['product name']
-        quantity_liters = row['quantity liters']
-        process_speed = row['process speed per hour']
-        line_efficiency = row['line efficiency']
-        change_over_mins = row['Change Over']
+        
+        # Use safe parsing for numeric fields that might have commas
+        quantity_liters = safe_number_parse(row['quantity liters'], 0)
+        process_speed = safe_number_parse(row['process speed per hour'], 1)
+        line_efficiency = float(str(row['line efficiency']).replace(',', '')) if pd.notna(row['line efficiency']) else 0.0
+        change_over_mins = safe_number_parse(row['Change Over'], 0)
         additional_wash = row.get('Additional Wash', 'No') if 'Additional Wash' in row else 'No'
 
         # Insert any scheduled washes that must occur before this product's start time
@@ -324,7 +344,6 @@ def generate_timeline(df):
 
         # Advance time to end of this product
         current_time = extended_processing_end
- 
 
         # safer: reset 24h origin only when processing truly resumes after a wash
         if wash_interruptions:
