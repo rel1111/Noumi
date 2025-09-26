@@ -9,16 +9,10 @@ import io
 
 def generate_timeline(df):
     """
-    Processes the production plan data and generates a timeline.
-    
-    Args:
-        df (pd.DataFrame): The DataFrame containing the production plan data.
-        
-    Returns:
-        matplotlib.figure.Figure: The generated timeline figure.
+    Clean rebuild of production timeline generator with simplified 24hr wash logic.
     """
     
-    # Define colors for each task
+    # Define colors
     colors = {
         'processing': 'darkgreen',
         'wash': 'purple',
@@ -28,7 +22,7 @@ def generate_timeline(df):
     
     tasks = []
     
-    # Parse schedule parameters from first row
+    # Parse parameters from first row
     try:
         start_time = pd.to_datetime(df.loc[0, 'Date from'])
         wash_duration_mins = int(df.loc[0, 'Duration']) if pd.notna(df.loc[0, 'Duration']) else 0
@@ -36,7 +30,6 @@ def generate_timeline(df):
         wash_duration = timedelta(minutes=wash_duration_mins)
         gap_duration = timedelta(minutes=wash_gap_mins)
         
-        # Get first wash time if specified
         first_wash_time = None
         if pd.notna(df.loc[0, 'First Wash Time']):
             first_wash_time = pd.to_datetime(df.loc[0, 'First Wash Time'])
@@ -45,36 +38,35 @@ def generate_timeline(df):
         st.error(f"Error parsing schedule parameters: {e}")
         return None
     
-    # Intermediate wash duration (3 hours default)
-    intermediate_duration = timedelta(minutes=180)
-    st.info(f"Intermediate wash duration: 180 minutes (3 hours)")
+    # Constants
+    intermediate_duration = timedelta(minutes=180)  # 3 hours
+    st.info("Intermediate wash duration: 180 minutes (3 hours)")
     
-    # Initialize tracking variables
+    # Tracking variables
     current_time = start_time
     last_wash_end_time = first_wash_time if first_wash_time else start_time
-    last_processing_start_after_wash = None  # Track when processing started after the most recent wash
+    last_wash_of_any_kind = None  # Simple tracker for 24hr rule
     
     # Add first wash if specified
     if first_wash_time and wash_duration > timedelta(0):
-        # Scheduled wash
-        tasks.append({
-            'start': first_wash_time,
-            'end': first_wash_time + wash_duration,
-            'task': 'wash',
-            'product': 'Scheduled Wash',
-            'order': -2
-        })
-        # Simultaneous intermediate wash
-        tasks.append({
-            'start': first_wash_time,
-            'end': first_wash_time + wash_duration,
-            'task': 'intermediate_wash', 
-            'product': 'Intermediate Wash',
-            'order': -1
-        })
+        tasks.extend([
+            {
+                'start': first_wash_time,
+                'end': first_wash_time + wash_duration,
+                'task': 'wash',
+                'product': 'Scheduled Wash',
+                'order': -2
+            },
+            {
+                'start': first_wash_time,
+                'end': first_wash_time + wash_duration,
+                'task': 'intermediate_wash', 
+                'product': 'Intermediate Wash',
+                'order': -1
+            }
+        ])
         last_wash_end_time = first_wash_time + wash_duration
-        # Reset the 24hr counter since we had a wash
-        last_processing_start_after_wash = None
+        last_wash_of_any_kind = first_wash_time + wash_duration
     
     # Process each product
     for i, row in df.iterrows():
@@ -85,186 +77,173 @@ def generate_timeline(df):
         change_over_mins = row['Change Over']
         additional_wash = row.get('Additional Wash', 'No')
         
-        # Track if there's an additional wash for this product
-        additional_wash_end = None
-        
-        # Additional wash at start of product if marked "Yes"
+        # 1. Additional wash if needed
         if additional_wash == 'Yes' and wash_duration > timedelta(0):
-            additional_wash_end = current_time + wash_duration
-            # Scheduled wash
-            tasks.append({
-                'start': current_time,
-                'end': additional_wash_end,
-                'task': 'wash',
-                'product': 'Scheduled Wash',
-                'order': -2
-            })
-            # Simultaneous intermediate wash
-            tasks.append({
-                'start': current_time,
-                'end': additional_wash_end,
-                'task': 'intermediate_wash',
-                'product': 'Intermediate Wash', 
-                'order': -1
-            })
-            current_time = additional_wash_end
+            tasks.extend([
+                {
+                    'start': current_time,
+                    'end': current_time + wash_duration,
+                    'task': 'wash',
+                    'product': 'Scheduled Wash',
+                    'order': -2
+                },
+                {
+                    'start': current_time,
+                    'end': current_time + wash_duration,
+                    'task': 'intermediate_wash',
+                    'product': 'Intermediate Wash', 
+                    'order': -1
+                }
+            ])
+            current_time += wash_duration
             last_wash_end_time = current_time
-            # Reset the 24hr counter since we had a wash
-            last_processing_start_after_wash = processing_start  # Start counting from after this wash
+            last_wash_of_any_kind = current_time
         
-        # Changeover (skip first product)
-        if i > 0:
+        # 2. Changeover (skip first product)
+        if i > 0 and change_over_mins > 0:
             changeover_duration = timedelta(minutes=change_over_mins)
+            
+            # Check for scheduled wash overlap
+            next_wash_time = last_wash_end_time + gap_duration
             changeover_end = current_time + changeover_duration
             
-            # Check if scheduled wash overlaps with changeover
-            next_wash_time = last_wash_end_time + gap_duration
             if (wash_duration > timedelta(0) and 
                 next_wash_time < changeover_end and 
                 next_wash_time + wash_duration > current_time):
                 
-                # Skip changeover, use wash time instead
-                tasks.append({
-                    'start': next_wash_time,
-                    'end': next_wash_time + wash_duration,
-                    'task': 'wash',
-                    'product': 'Scheduled Wash',
-                    'order': -2
-                })
-                tasks.append({
-                    'start': next_wash_time,
-                    'end': next_wash_time + wash_duration,
-                    'task': 'intermediate_wash',
-                    'product': 'Intermediate Wash',
-                    'order': -1
-                })
+                # Scheduled wash overlaps - skip changeover, use wash
+                tasks.extend([
+                    {
+                        'start': next_wash_time,
+                        'end': next_wash_time + wash_duration,
+                        'task': 'wash',
+                        'product': 'Scheduled Wash',
+                        'order': -2
+                    },
+                    {
+                        'start': next_wash_time,
+                        'end': next_wash_time + wash_duration,
+                        'task': 'intermediate_wash',
+                        'product': 'Intermediate Wash',
+                        'order': -1
+                    }
+                ])
                 current_time = next_wash_time + wash_duration
                 last_wash_end_time = current_time
-            elif additional_wash_end and changeover_duration <= wash_duration:
-                # Changeover can fit during the additional wash that just completed
-                # Move changeover to overlap with the wash
-                changeover_start = additional_wash_end - changeover_duration
-                tasks.append({
-                    'start': changeover_start,
-                    'end': additional_wash_end,
-                    'task': 'changeover',
-                    'product': product_name,
-                    'order': i
-                })
-                # current_time already updated by additional wash, no need to change
+                last_wash_of_any_kind = current_time
+                
             else:
-                # Normal changeover
-                tasks.append({
-                    'start': current_time,
-                    'end': changeover_end,
-                    'task': 'changeover',
-                    'product': product_name,
-                    'order': i
-                })
-                current_time = changeover_end
+                # Check if changeover can overlap with an additional wash that just completed
+                # Look for recent additional wash that could accommodate this changeover
+                can_overlap_with_recent_wash = False
+                for task in tasks:
+                    if (task['task'] == 'wash' and 
+                        task['product'] == 'Scheduled Wash' and
+                        task['end'] == current_time and  # Wash just ended
+                        changeover_duration <= wash_duration):  # Changeover fits in wash duration
+                        
+                        # Move changeover to overlap with the end of this wash
+                        changeover_start = task['end'] - changeover_duration
+                        tasks.append({
+                            'start': changeover_start,
+                            'end': task['end'],
+                            'task': 'changeover',
+                            'product': product_name,
+                            'order': i
+                        })
+                        can_overlap_with_recent_wash = True
+                        break
+                
+                if not can_overlap_with_recent_wash:
+                    # Normal changeover
+                    tasks.append({
+                        'start': current_time,
+                        'end': changeover_end,
+                        'task': 'changeover',
+                        'product': product_name,
+                        'order': i
+                    })
+                    current_time = changeover_end
         
-        # Processing calculation
+        # 3. Check for 24hr standalone intermediate wash BEFORE processing
+        needs_standalone = False
+        if last_wash_of_any_kind:
+            hours_since_wash = (current_time - last_wash_of_any_kind).total_seconds() / 3600
+            if hours_since_wash >= 24:
+                needs_standalone = True
+        elif not last_wash_of_any_kind and current_time > start_time + timedelta(hours=24):
+            # No wash ever, but 24+ hours since start
+            needs_standalone = True
+            
+        if needs_standalone:
+            tasks.append({
+                'start': current_time,
+                'end': current_time + intermediate_duration,
+                'task': 'intermediate_wash',
+                'product': 'Intermediate Wash',
+                'order': -1
+            })
+            current_time += intermediate_duration
+            last_wash_of_any_kind = current_time
+        
+        # 4. Processing
         effective_speed = process_speed * line_efficiency
         processing_hours = quantity_liters / effective_speed
         processing_start = current_time
         processing_end = current_time + timedelta(hours=processing_hours)
         
-        # Set processing start for 24hr timer if it's not currently set
-        # This happens at the very beginning or after any wash has reset the timer
-        if last_processing_start_after_wash is None:
-            last_processing_start_after_wash = processing_start
-        
-        # Find all washes that occur during processing
+        # Find scheduled washes during processing
         wash_interruptions = []
-        
-        # Check for scheduled washes during processing
         if wash_duration > timedelta(0):
             next_wash = last_wash_end_time + gap_duration
             while next_wash < processing_end:
                 wash_end = next_wash + wash_duration
-                wash_interruptions.append({
-                    'start': next_wash,
-                    'end': wash_end,
-                    'type': 'scheduled'
-                })
+                wash_interruptions.append((next_wash, wash_end))
                 next_wash = wash_end + gap_duration
         
-        # Check for 24hr standalone intermediate wash
-        # Only if NO intermediate wash has occurred in the 24hr period since processing started
-        if last_processing_start_after_wash:
-            standalone_due = last_processing_start_after_wash + timedelta(hours=24)
-            if processing_start <= standalone_due <= processing_end:
-                # Check if there's been ANY intermediate wash since processing started
-                # (scheduled washes always include intermediate washes)
-                has_intermediate_in_period = any(
-                    w['start'] >= last_processing_start_after_wash and w['start'] <= standalone_due
-                    for w in wash_interruptions
-                )
-                
-                if not has_intermediate_in_period:
-                    # No intermediate wash in 24hr period, add standalone
-                    wash_interruptions.append({
-                        'start': standalone_due,
-                        'end': standalone_due + intermediate_duration,
-                        'type': 'standalone_intermediate'
-                    })
-        
-        # Sort wash interruptions by start time
-        wash_interruptions.sort(key=lambda x: x['start'])
-        
-        # Calculate total wash extension time
-        total_wash_extension = sum(
-            (w['end'] - w['start']).total_seconds() / 3600
-            for w in wash_interruptions
-            if w['start'] >= processing_start
+        # Extend processing for wash interruptions
+        total_wash_time = sum(
+            (wash_end - wash_start).total_seconds() / 3600
+            for wash_start, wash_end in wash_interruptions
+            if wash_start >= processing_start
         )
+        extended_processing_end = processing_end + timedelta(hours=total_wash_time)
         
-        # Extend processing end time
-        extended_processing_end = processing_end + timedelta(hours=total_wash_extension)
+        # Add wash tasks that occur during processing
+        for wash_start, wash_end in wash_interruptions:
+            if wash_start >= processing_start:
+                tasks.extend([
+                    {
+                        'start': wash_start,
+                        'end': wash_end,
+                        'task': 'wash',
+                        'product': 'Scheduled Wash',
+                        'order': -2
+                    },
+                    {
+                        'start': wash_start,
+                        'end': wash_end,
+                        'task': 'intermediate_wash',
+                        'product': 'Intermediate Wash',
+                        'order': -1
+                    }
+                ])
+                last_wash_end_time = wash_end
+                last_wash_of_any_kind = wash_end
         
-        # Add wash tasks
-        for wash in wash_interruptions:
-            if wash['type'] == 'scheduled':
-                # Scheduled wash
-                tasks.append({
-                    'start': wash['start'],
-                    'end': wash['end'],
-                    'task': 'wash',
-                    'product': 'Scheduled Wash',
-                    'order': -2
-                })
-                # Simultaneous intermediate wash
-                tasks.append({
-                    'start': wash['start'],
-                    'end': wash['end'],
-                    'task': 'intermediate_wash',
-                    'product': 'Intermediate Wash',
-                    'order': -1
-                })
-                last_wash_end_time = wash['end']
-            elif wash['type'] == 'standalone_intermediate':
-                # Standalone intermediate wash
-                tasks.append({
-                    'start': wash['start'],
-                    'end': wash['end'],
-                    'task': 'intermediate_wash',
-                    'product': 'Intermediate Wash',
-                    'order': -1
-                })
-        
-        # Create processing segments around wash interruptions
+        # Create processing segments around washes
         segment_start = processing_start
-        for wash in wash_interruptions:
-            if segment_start < wash['start']:
-                # Processing segment before wash
-                tasks.append({
-                    'start': segment_start,
-                    'end': wash['start'],
-                    'task': 'processing',
-                    'product': product_name,
-                    'order': i
-                })
-            segment_start = max(segment_start, wash['end'])
+        for wash_start, wash_end in wash_interruptions:
+            if wash_start >= processing_start:
+                if segment_start < wash_start:
+                    tasks.append({
+                        'start': segment_start,
+                        'end': wash_start,
+                        'task': 'processing',
+                        'product': product_name,
+                        'order': i
+                    })
+                segment_start = wash_end
         
         # Final processing segment
         if segment_start < extended_processing_end:
@@ -278,22 +257,14 @@ def generate_timeline(df):
         
         # Update current time
         current_time = extended_processing_end
-        
-        # Only reset the 24hr timer if there was actually a wash that interrupted processing
-        # The timer should continue running across normal changeovers
-        for wash in wash_interruptions:
-            if wash['type'] in ['scheduled', 'standalone_intermediate']:
-                # Any actual wash resets the timer - next processing starts the 24hr countdown again
-                last_processing_start_after_wash = None
-                break
     
     # Create visualization
-    fig, ax = plt.subplots(figsize=(18, 8))
-    ax.set_facecolor('white')
-    
     if not tasks:
         st.error("No tasks generated. Please check your data.")
         return None
+    
+    fig, ax = plt.subplots(figsize=(18, 8))
+    ax.set_facecolor('white')
     
     # Organize products for display
     tasks_df = pd.DataFrame(tasks)
