@@ -247,8 +247,8 @@ def generate_timeline(df):
                     ))
                     last_intermediate_wash_time = intermediate_due_time + intermediate_wash_duration
 
-                    if (intermediate_due_time + intermediate_wash_duration) > extended_processing_end_time:
-                        extended_processing_end_time += intermediate_wash_duration
+                # Always extend processing time by the full wash duration
+                    extended_processing_end_time += intermediate_wash_duration
 
         
         # Update the last processing start time for next iteration
@@ -328,6 +328,17 @@ def generate_timeline(df):
                         rotation=90, va='top', ha='right',
                         fontsize=8, fontweight='bold', color='black',
                         path_effects=[plt.matplotlib.patheffects.withStroke(linewidth=3, foreground='yellow')])
+            
+            if task['task'] == 'processing':
+                # Add start and end time labels for processing - black text with green outline
+                ax.text(task['start'], y_pos + 0.5, task['start'].strftime('%H:%M'),
+                        rotation=90, va='bottom', ha='left',
+                        fontsize=7, fontweight='bold', color='black',
+                        path_effects=[plt.matplotlib.patheffects.withStroke(linewidth=2, foreground='lightgreen')])
+                ax.text(task['end'], y_pos + 0.5, task['end'].strftime('%H:%M'),
+                        rotation=90, va='bottom', ha='left',
+                        fontsize=7, fontweight='bold', color='black',
+                        path_effects=[plt.matplotlib.patheffects.withStroke(linewidth=2, foreground='lightgreen')])
 
         y_pos += 1
 
