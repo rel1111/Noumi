@@ -226,8 +226,7 @@ def generate_timeline(df):
         extended_processing_end_time = processing_end_time + total_wash_overlap_duration
         processing_start_times.append(current_time)
 
-
-        # --- Standalone 24hr Intermediate Wash Check ---
+# --- Standalone 24hr Intermediate Wash Check ---
         if last_intermediate_wash_time is not None:
             intermediate_due_time = last_intermediate_wash_time + timedelta(hours=24)
 
@@ -247,8 +246,9 @@ def generate_timeline(df):
                     ))
                     last_intermediate_wash_time = intermediate_due_time + intermediate_wash_duration
 
-                    if (intermediate_due_time + intermediate_wash_duration) > extended_processing_end_time:
-                        extended_processing_end_time += intermediate_wash_duration
+                    # FIXED LOGIC: Always extend processing time by the full wash duration
+                    # when a standalone intermediate wash occurs during processing
+                    extended_processing_end_time += intermediate_wash_duration
 
         
         # Update the last processing start time for next iteration

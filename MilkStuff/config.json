@@ -1,0 +1,10 @@
+{
+    "database": {
+        "server": "192.168.111.86",
+        "username": "gopi.somanchi",
+        "password": "1nt3grat1on",
+        "database_name": "F1-FD-DB",
+        "port": 1433,
+        "driver": "ODBC Driver 17 for SQL Server"
+    }
+}
