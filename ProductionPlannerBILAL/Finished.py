@@ -448,7 +448,7 @@ def generate_timeline(df):
     # Legend
     handles = [plt.Rectangle((0, 0), 1, 1, fc=colors[t]) for t in colors]
     ax.legend(handles, colors.keys(), loc='upper right')
-
+            
     plt.tight_layout()
     return fig
 
