@@ -98,14 +98,9 @@ if __name__ == "__main__":
         print("Available tables:")
         print(tables_df)
         
-        # Example: Query data from a specific table
-        # Replace 'your_table_name' with an actual table name
-        # data_query = "SELECT TOP 10 * FROM your_table_name"
-        # data_df = db.execute_query(data_query)
-        # print(data_df)
-        
     except Exception as e:
         print(f"Error: {e}")
     finally:
         # Always close the connection
         db.close()
+
