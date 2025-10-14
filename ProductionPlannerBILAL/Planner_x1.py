@@ -4,7 +4,8 @@ import matplotlib.patheffects
 from datetime import datetime, timedelta
 import matplotlib.dates as mdates
 import streamlit as st
-import io
+import io;
+
 
 def generate_timeline(df):
     """
