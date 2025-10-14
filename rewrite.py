@@ -25,32 +25,37 @@ def find_tasks(df):
 
     tasks = [] 
 
-    for row in df:
-
-        product = df.loc[row, 'product name']
-
-        product_qty = df.loc[row, 'quantity liters']
-        process_speed = df.loc[row,'process speed per hour']
-        line_efficiency = df.loc[row,'line efficiency']
-
+    for i, row in df.iterrows():
+        
+        product = row['product name']
+        product_qty = row['quantity liters']
+        process_speed = row['process speed per hour']
+        line_efficiency = row['line efficiency']
         hourly_speed = process_speed * line_efficiency
         process_duration = (hourly_speed / product_qty) * 60
-
-        change_over = df.loc[row, 'Change Over']
-
-
-        first_wash_duration = df.loc[row,'Duration']
-        duration_gap = df.loc[row,'Gap']
-        int_wash_duration = df.loc[row, 'Intermediate Wash Duration']
-        additional_wash = df.loc(row,'Additional Wash')
-
-        task = (process_duration,first_wash_duration,duration_gap,int_wash_duration,additional_wash)
+        change_over = row['Change Over']
+        first_wash_duration = row['Duration']
+        duration_gap = row['Gap']
+        int_wash_duration = row['Intermediate Wash Duration']
+        additional_wash = row['Additional Wash']
+        task = (product_name,process_duration,change_over,first_wash_duration,duration_gap,int_wash_duration,additional_wash)
         tasks.append(task)
 
     return tasks
+
+def full_wash(begin,duration,wash_type= 'scheduled'):
+    
 
 
     
 df = pd.read_excel('updated_example_production_data with wash time - Copy 2.xlsx') #change to uploaded file 
 print(starting_time(df))
-print(find_tasks(df)) 
+print(find_tasks(df))
+#print(find_tasks(df)) 
+print(df.columns.tolist())
+for row in df:
+    print(f'row value: {row}')
+
+for i, row in df.iterrows():
+    product_name = row['product name']
+    print(product_name)

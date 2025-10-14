@@ -42,33 +42,11 @@ def generate_timeline(df):
             'order': -0.5
         }
 
-    def needs_24hr_intermediate_wash(current_processing_time, last_intermediate_time):
-        """Check if we need a 24hr standalone intermediate wash based on processing time"""
+    def needs_24hr_intermediate_wash(current_time, last_intermediate_time):
+        """Check if we need a 24hr standalone intermediate wash"""
         if last_intermediate_time is None:
             return False
-        # Check if 24 hours have passed since last intermediate wash from the perspective of processing
-        return (current_processing_time - last_intermediate_time) >= timedelta(hours=24)
-
-    def find_next_intermediate_wash_time(current_processing_start, current_processing_end, last_processing_start_time, last_intermediate_wash_time):
-        """Find when the next intermediate wash should occur - 24hrs from processing start"""
-        if last_processing_start_time is None:
-            return None
-        
-        # Calculate when 24 hours will have passed since PROCESSING started
-        next_intermediate_due = last_processing_start_time + timedelta(hours=24)
-        
-        # Only schedule if:
-        # 1. The 24hr mark falls within current processing period
-        # 2. We haven't already done an intermediate wash recently (from scheduled washes)
-        if (next_intermediate_due >= current_processing_start and 
-            next_intermediate_due < current_processing_end):
-            
-            # Check if we already had a recent intermediate wash from scheduled washes
-            if last_intermediate_wash_time and (next_intermediate_due - last_intermediate_wash_time) < timedelta(hours=24):
-                return None  # Skip because we already had a recent intermediate wash
-            
-            return next_intermediate_due
-        return None
+        return (current_time - last_intermediate_time) >= timedelta(hours=24)
 
     # ----------------------------
     # Parse schedule parameters
@@ -102,14 +80,20 @@ def generate_timeline(df):
         intermediate_wash_duration = timedelta(minutes=180)
 
     first_wash_time = None
+    first_wash_end_time = None
     try:
-        first_wash_time = pd.to_datetime(df.loc[0, 'First Wash Time'])
-        last_wash_end_time = first_wash_time
+        first_wash_raw = df.loc[0, 'First Wash Time']
+        # Only parse if it's not a placeholder
+        if pd.notna(first_wash_raw) and str(first_wash_raw).strip() not in ['.', '-', '', 'None', 'nan']:
+            first_wash_time = pd.to_datetime(first_wash_raw)
+            first_wash_end_time = first_wash_time + wash_duration
+            st.info(f"First wash scheduled: {first_wash_time.strftime('%Y-%m-%d %H:%M')} to {first_wash_end_time.strftime('%Y-%m-%d %H:%M')}")
+        last_wash_end_time = first_wash_end_time if first_wash_end_time else start_time_of_week
     except Exception:
         last_wash_end_time = start_time_of_week
 
     last_intermediate_wash_time = None
-    last_processing_start_time = None  # Track when processing last started
+    last_processing_start_after_wash = None  # Track 24hr timer origin
     processing_start_times = []
 
     # ----------------------------
@@ -119,22 +103,39 @@ def generate_timeline(df):
         # Scheduled wash
         tasks.append({
             'start': first_wash_time,
-            'end': first_wash_time + wash_duration,
+            'end': first_wash_end_time,
             'duration_hours': wash_duration.total_seconds() / 3600,
             'task': 'wash',
             'product': 'Scheduled Wash',
             'order': -2
         })
         # Simultaneous intermediate wash
-        tasks.append(add_intermediate_wash(first_wash_time, first_wash_time + wash_duration, wash_duration))
-        last_intermediate_wash_time = first_wash_time + wash_duration
-        last_wash_end_time = first_wash_time + wash_duration
+        tasks.append(add_intermediate_wash(first_wash_time, first_wash_end_time, wash_duration))
+        last_intermediate_wash_time = first_wash_end_time
+        last_wash_end_time = first_wash_end_time
+        
+        # FIXED: If production start time falls during the first wash, push it forward
+        # This ensures processing doesn't start while the first wash is running
+        if current_time < first_wash_end_time:
+            st.info(f"Production start delayed: First wash in progress. Production will begin at {first_wash_end_time.strftime('%Y-%m-%d %H:%M')}")
+            current_time = first_wash_end_time
+            # Set 24hr timer origin to when processing actually starts (after first wash)
+            last_processing_start_after_wash = current_time
+        else:
+            # First wash happens AFTER production starts, so it will interrupt processing
+            # The 24hr timer will be set when the first product processing begins
+            pass
 
     # ----------------------------
     # Loop over products
     # ----------------------------
     for i, row in df.iterrows():
         product_name = row['product name']
+        
+        # Skip empty product names
+        if pd.isna(product_name) or str(product_name).strip() == '':
+            continue
+            
         quantity_liters = row['quantity liters']
         process_speed = row['process speed per hour']
         line_efficiency = row['line efficiency']
@@ -189,14 +190,16 @@ def generate_timeline(df):
 
         # --- Processing ---
         effective_speed = process_speed * line_efficiency
+        if effective_speed == 0:
+            st.error(f"Effective speed for product '{product_name}' is zero. Skipping.")
+            continue
+            
         total_processing_hours = quantity_liters / effective_speed
         processing_end_time = current_time + timedelta(hours=total_processing_hours)
-        processing_start_time = current_time  # Store the actual processing start time
 
         total_wash_overlap_duration = timedelta(minutes=0)
         next_wash_start_time = last_wash_end_time + gap_duration
 
-        # Handle scheduled washes during processing
         while next_wash_start_time < processing_end_time + total_wash_overlap_duration:
             wash_end_time = next_wash_start_time + wash_duration
             overlap_start = max(current_time, next_wash_start_time)
@@ -220,44 +223,42 @@ def generate_timeline(df):
 
                 last_wash_end_time = wash_end_time
                 next_wash_start_time = last_wash_end_time + gap_duration
+                # Mark that we need to reset 24hr timer when processing resumes after this wash
+                # (will be handled in processing segments section)
             else:
                 break
 
         extended_processing_end_time = processing_end_time + total_wash_overlap_duration
         processing_start_times.append(current_time)
-
-        # Check for standalone 24hr intermediate wash
-        # Rule: Intermediate wash MUST happen within 24hrs of ANY processing start
-        if last_processing_start_time:
-            intermediate_due_time = last_processing_start_time + timedelta(hours=24)
-            
-            # Check if we're past the 24hr deadline or will be during current processing
-            if (current_time >= intermediate_due_time or 
-                (intermediate_due_time >= processing_start_time and intermediate_due_time <= extended_processing_end_time)):
-                
-                # Check if we haven't already done an intermediate wash since the deadline
-                needs_wash = True
-                if last_intermediate_wash_time and last_intermediate_wash_time >= intermediate_due_time:
-                    needs_wash = False
-                
-                if needs_wash:
-                    # Schedule the wash at the due time, or now if we're past due
-                    wash_start_time = max(intermediate_due_time, current_time)
-                    if wash_start_time < extended_processing_end_time:
-                        wash_start_time = max(wash_start_time, processing_start_time)  # Don't start before current processing
-                    
-                    intermediate_end_time = wash_start_time + intermediate_wash_duration
-                    tasks.append(add_intermediate_wash(wash_start_time, intermediate_end_time, intermediate_wash_duration))
-                    last_intermediate_wash_time = intermediate_end_time
-                    
-                    # Extend processing time to account for the intermediate wash
-                    if intermediate_end_time > extended_processing_end_time:
-                        extended_processing_end_time += intermediate_wash_duration
         
-        # Update the last processing start time for next iteration
-        last_processing_start_time = processing_start_time
+        # Initialize 24hr timer origin if this is the first product
+        if last_processing_start_after_wash is None:
+            last_processing_start_after_wash = current_time
 
-        # Create processing segments around wash intervals
+        # Standalone 24hr intermediate wash if needed
+        # Calculate based on when processing actually started (after any washes)
+        if last_processing_start_after_wash:
+            time_24hr_from_start = last_processing_start_after_wash + timedelta(hours=24)
+            
+            # Check if 24hr mark falls within this product's processing window
+            if current_time <= time_24hr_from_start <= extended_processing_end_time:
+                # Check if there's already a wash covering the 24hr mark
+                has_wash_at_24hr = any(
+                    t['start'] <= time_24hr_from_start <= t['end']
+                    for t in tasks
+                    if t['task'] in ['wash', 'intermediate_wash']
+                )
+                
+                if not has_wash_at_24hr:
+                    intermediate_end_24hr = time_24hr_from_start + intermediate_wash_duration
+                    tasks.append(add_intermediate_wash(time_24hr_from_start, intermediate_end_24hr, intermediate_wash_duration))
+                    last_intermediate_wash_time = intermediate_end_24hr
+                    extended_processing_end_time += intermediate_wash_duration
+                    st.info(f"24hr intermediate wash added at {time_24hr_from_start.strftime('%Y-%m-%d %H:%M')}")
+                    # Reset 24hr timer origin to when processing resumes after this intermediate wash
+                    last_processing_start_after_wash = intermediate_end_24hr
+
+        # Processing segments
         segment_start_time = current_time
         wash_intervals = [(t['start'], t['end']) for t in tasks if t['task'] in ['wash', 'intermediate_wash']]
         wash_intervals = sorted([w for w in wash_intervals if w[0] < extended_processing_end_time and w[1] > current_time])
@@ -273,6 +274,8 @@ def generate_timeline(df):
                     'order': i
                 })
             segment_start_time = max(segment_start_time, wash_end)
+            # Reset 24hr timer to when processing actually resumes after this wash
+            last_processing_start_after_wash = segment_start_time
 
         if segment_start_time < extended_processing_end_time:
             tasks.append({
@@ -292,9 +295,9 @@ def generate_timeline(df):
     fig, ax = plt.subplots(figsize=(18, 8))
     ax.set_facecolor('white')
 
-    y_pos = 0
-    product_y_positions = {}
-    product_order = []
+    if not tasks:
+        st.error("No tasks generated. Please check your data.")
+        return None
 
     tasks_df = pd.DataFrame(tasks).sort_values(by='order')
 
@@ -302,43 +305,129 @@ def generate_timeline(df):
     other_products = [p for p in tasks_df['product'].unique() if p not in wash_products]
     unique_products_ordered = [p for p in wash_products if p in tasks_df['product'].unique()] + other_products
 
+    y_pos = 0
+    product_y_positions = {}
+    product_order = []
+
     for product_name in unique_products_ordered:
         group = tasks_df[tasks_df['product'] == product_name].sort_values(by='start')
         product_y_positions[product_name] = y_pos
         product_order.append(product_name)
 
+        # Calculate batches for non-wash products (30,000L per batch)
+        num_batches = 0
+        if product_name not in wash_products:
+            product_row = df[df['product name'] == product_name]
+            if not product_row.empty:
+                try:
+                    quantity_liters = float(product_row.iloc[0]['quantity liters'])
+                    num_batches = int(quantity_liters / 30000) + (1 if quantity_liters % 30000 > 0 else 0)
+                except:
+                    num_batches = 0
+
         for _, task in group.iterrows():
+            duration = task['end'] - task['start']
             ax.broken_barh(
-                [(task['start'], task['end'] - task['start'])],
+                [(task['start'], duration)],
                 (y_pos - 0.4, 0.8),
                 facecolors=colors[task['task']],
                 edgecolor='black'
             )
 
-            # Draw vertical lines only for washes
+            # Add batch indicators for processing tasks
+            if task['task'] == 'processing' and num_batches > 0:
+                processing_segments = group[group['task'] == 'processing'].sort_values('start')
+                
+                # Calculate total processing duration
+                total_processing_duration = sum(
+                    (seg['end'] - seg['start']).total_seconds() 
+                    for _, seg in processing_segments.iterrows()
+                )
+                
+                time_per_batch = total_processing_duration / num_batches
+                
+                # Calculate cumulative time before this segment
+                cumulative_time = 0
+                for _, seg in processing_segments.iterrows():
+                    if seg['start'] == task['start']:
+                        break
+                    cumulative_time += (seg['end'] - seg['start']).total_seconds()
+                
+                # Draw batch markers within this segment
+                segment_duration = (task['end'] - task['start']).total_seconds()
+                batch_start_time = cumulative_time
+                
+                for batch_num in range(1, num_batches + 1):
+                    batch_end_time = batch_num * time_per_batch
+                    
+                    # Check if batch boundary is in this segment
+                    if batch_start_time < batch_end_time <= batch_start_time + segment_duration:
+                        time_into_segment = batch_end_time - batch_start_time
+                        batch_time = task['start'] + timedelta(seconds=time_into_segment)
+                        
+                        # Draw batch line
+                        ax.vlines(batch_time, ymin=y_pos - 0.4, ymax=y_pos + 0.4,
+                                 color='white', linestyle='--', linewidth=2, alpha=0.8)
+                        
+                        # Add batch label
+                        ax.text(batch_time, y_pos, f'B{batch_num}',
+                               ha='center', va='center', fontsize=8, fontweight='bold',
+                               color='white',
+                               bbox=dict(boxstyle='round,pad=0.3', facecolor='darkgreen',
+                                       edgecolor='white', linewidth=1.5, alpha=0.9))
+
+            # Draw vertical lines and labels for washes
             if task['task'] in ['wash', 'intermediate_wash']:
                 ax.vlines(task['start'], ymin=-0.5, ymax=y_pos + 0.4,
                           color='gray', linestyle='-', linewidth=0.5, alpha=0.5)
                 ax.vlines(task['end'], ymin=-0.5, ymax=y_pos + 0.4,
                           color='gray', linestyle='-', linewidth=0.5, alpha=0.5)
 
-                # Add start and end time labels only for washes - black text with yellow outline
                 ax.text(task['start'], -0.1, task['start'].strftime('%H:%M'),
                         rotation=90, va='top', ha='right',
-                        fontsize=8, fontweight='bold', color='black',
-                        path_effects=[plt.matplotlib.patheffects.withStroke(linewidth=3, foreground='yellow')])
+                        fontsize=8, fontweight='bold',
+                        color='black',
+                        path_effects=[matplotlib.patheffects.withStroke(linewidth=3, foreground='yellow')])
                 ax.text(task['end'], -0.1, task['end'].strftime('%H:%M'),
                         rotation=90, va='top', ha='right',
-                        fontsize=8, fontweight='bold', color='black',
-                        path_effects=[plt.matplotlib.patheffects.withStroke(linewidth=3, foreground='yellow')])
+                        fontsize=8, fontweight='bold',
+                        color='black',
+                        path_effects=[matplotlib.patheffects.withStroke(linewidth=3, foreground='yellow')])
+
+            # Add time labels for processing
+            if task['task'] == 'processing':
+                ax.text(task['start'], y_pos + 0.5, task['start'].strftime('%H:%M'),
+                        rotation=90, va='bottom', ha='left', fontsize=7, fontweight='bold',
+                        color='black',
+                        path_effects=[matplotlib.patheffects.withStroke(linewidth=2, foreground='lightgreen')])
+                ax.text(task['end'], y_pos + 0.5, task['end'].strftime('%H:%M'),
+                        rotation=90, va='bottom', ha='left', fontsize=7, fontweight='bold',
+                        color='black',
+                        path_effects=[matplotlib.patheffects.withStroke(linewidth=2, foreground='lightgreen')])
 
         y_pos += 1
 
     ax.set_yticks(list(product_y_positions.values()))
     ax.set_yticklabels(product_order)
     ax.set_xlabel("Time")
-    ax.set_title("Weekly Production Plan Timeline")
+    
+    # Create title with week information
+    start_date = tasks_df['start'].min()
+    end_date = tasks_df['end'].max()
+    week_start = start_date.strftime('%Y-%m-%d')
+    week_end = end_date.strftime('%Y-%m-%d')
+    
+    title = f"Weekly Production Plan Timeline\nWeek: {week_start} to {week_end}"
+    ax.set_title(title, fontsize=14, pad=20)
     ax.grid(True)
+    
+    # Add timestamp
+    current_timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    ax.text(0.01, 0.02, f"Generated: {current_timestamp}",
+            transform=ax.transAxes, ha='left', va='bottom',
+            fontsize=9, alpha=0.7, style='italic',
+            bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.8))
+    
     ax.invert_yaxis()
 
     ax.xaxis.set_major_locator(mdates.DayLocator())
@@ -346,13 +435,12 @@ def generate_timeline(df):
     ax.xaxis.set_minor_locator(mdates.HourLocator(interval=3))
     ax.xaxis.set_minor_formatter(mdates.DateFormatter('%H:%M'))
 
-    if not tasks_df.empty:
-        first_date = tasks_df['start'].min().floor('D')
-        last_date = tasks_df['end'].max().ceil('D')
-        delta_days = (last_date - first_date).days + 1
-        for day in range(delta_days):
-            day_start = first_date + timedelta(days=day)
-            ax.axvline(day_start, color='gray', linestyle='--', linewidth=1, alpha=0.6)
+    first_date = tasks_df['start'].min().floor('D')
+    last_date = tasks_df['end'].max().ceil('D')
+    delta_days = (last_date - first_date).days + 1
+    for day in range(delta_days):
+        day_start = first_date + timedelta(days=day)
+        ax.axvline(day_start, color='gray', linestyle='--', linewidth=1, alpha=0.6)
 
     plt.xticks(rotation=90, ha='right', va='top')
     plt.setp(ax.get_xminorticklabels(), rotation=90, ha='right', va='top')
@@ -437,6 +525,8 @@ def main():
 
         except Exception as e:
             st.error(f"Error reading file: {str(e)}")
+            import traceback
+            st.error(traceback.format_exc())
     else:
         st.info("Please upload a file to get started.")
 
@@ -444,6 +534,7 @@ def main():
             st.write("Your file should contain these columns:")
             st.write("**Required:** product name, quantity liters, process speed per hour, line efficiency, Change Over, Date from, Duration, Gap")
             st.write("**Optional:** First Wash Time, Intermediate Wash Duration")
+            st.write("\n**Date Format:** Dates should be in format YYYY-MM-DD HH:MM:SS or YYYY-MM-DD")
 
 
 if __name__ == "__main__":
